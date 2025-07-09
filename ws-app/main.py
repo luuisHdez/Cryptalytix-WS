@@ -55,9 +55,10 @@ async def connect(sid, environ):
         if name == "jwt-auth":
             jwt_token = value
             break
+
     if not jwt_token:
         print(f"⛔ Conexión rechazada: token ausente")
-        return False  # Rechaza conexión
+        raise ConnectionRefusedError("token missing")
 
     try:
         payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=["HS256"])
@@ -66,11 +67,15 @@ async def connect(sid, environ):
 
         connected_users[sid] = user_id
 
+    except jwt.ExpiredSignatureError:
+        print(f"⛔ JWT expirado")
+        raise ConnectionRefusedError("token expired")
     except InvalidTokenError as e:
         print(f"⛔ JWT inválido: {e}")
-        return False  # Rechaza conexión
+        raise ConnectionRefusedError("token invalid")
 
     print(f"🟢 Cliente conectado: {sid}")
+
 
 @sio.event
 async def disconnect(sid):

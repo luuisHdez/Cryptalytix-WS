@@ -14,11 +14,10 @@ redis_client = redis.StrictRedis.from_url(os.getenv("REDIS_URL"), decode_respons
 
 class OperationConfig(BaseModel):
     symbol: str
-    entry_point: str
     alert_up: str
     alert_down: str
 
-    @field_validator('entry_point',  'alert_up', 'alert_down')
+    @field_validator('alert_up', 'alert_down')
     @classmethod
     def validate_decimal_precision(cls, v, info):
         try:
@@ -42,7 +41,6 @@ def set_operation_config(config: OperationConfig,  request: Request):
         key,
         json.dumps({
             "symbol": config.symbol.upper(),
-            "entry_point": "{:.4f}".format(float(config.entry_point)),
             "alert_up": "{:.4f}".format(float(config.alert_up)),
             "alert_down": "{:.4f}".format(float(config.alert_down)),
             "status": "inactive",
