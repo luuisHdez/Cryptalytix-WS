@@ -1,8 +1,8 @@
 import json
 import logging
 from datetime import datetime
-import math
-from utils.aws_gateway_client import trigger_apigateway_async
+from services.binance_api import close_market_order
+from utils.telegram_utils import send_telegram_message
 from shared.socket_context import connected_users
 from utils.redis_utils import redis_client
 
@@ -10,108 +10,128 @@ logger = logging.getLogger("binance_ws")
 
 evaluation_tasks = {}
 
-async def evaluate_indicators(symbol: str, close_price: float, sid: str, sio):
-    user_id = connected_users.get(sid)
-    key = f"{symbol.upper()}_operation_{user_id}"
-    config_json = redis_client.get(key)
-    if not config_json:
-        return
-
-    config = json.loads(config_json)
-    take_profit = float(config.get("take_profit", 0))
-    stop_loss = float(config.get("stop_loss", 0))
-    entry_point = float(config.get("entry_point", 0))
-    status = config.get("status", "inactive")
-    # --- Generar entry_point si no existe y condiciones son favorables ---
-   
-    if status != "active":
-        return
+async def evaluate_indicators(symbol: str, close_price: float, sid: str, sio,user_id):
     
-    raw = redis_client.zrevrange(symbol.upper(), 0, 0)
-    if not raw:
+    key = f"{symbol.upper()}_operation_{user_id}"
+
+    # 1) Leer SIEMPRE desde Redis
+    try:
+        raw = redis_client.get(key)
+        if not raw:
+            return
+        config = json.loads(raw)
+    except redis_client.exceptions.RedisError as e:
+        logger.warning(f"[{sid}] Redis error (get {key}): {e}")
         return
 
-    try:
-        vela = json.loads(raw[0])
-        rsi      = float(vela.get("rsi"))
-        ema6     = float(vela.get("ema6"))
-        bb_upper = float(vela.get("bb_upper"))
-        high     = float(vela.get("high"))
-        close    = float(vela.get("close"))
-    except (TypeError, ValueError):
-        return  # Datos incompletos
+    entry_point = float(config.get("entry_point", 0))
+    take_profit = float(config.get("take_profit",  0))
+    stop_loss   = float(config.get("stop_loss",    0))
+    tb_str      = config.get("take_benefit")
+    take_benefit= float(tb_str) if tb_str is not None else None
+    
+    # 2) Cierres definitivos, en orden de urgencia:
+    # 2.1 Stop‑loss
+    if stop_loss and close_price <= stop_loss:
+        close_result = close_market_order(symbol)
+        if close_result.get("status") == "FILLED":
+            await _close_operation(symbol, close_price, config, key, sid, sio, "SL", close_result)
+        else:
+            logger.warning(f"[{sid}] Falló SL: {close_result}")
+        return
 
-    # --- Cierre por pico de RSI ---
-    max_rsi_key = f"{symbol.upper()}_max_rsi_{user_id}"
+    # 2.2 Take‑benefit
+    if take_benefit is not None and close_price <= take_benefit:
+        close_result = close_market_order(symbol)
+        if close_result.get("status") == "FILLED":
+            await _close_operation(symbol, close_price, config, key, sid, sio, "TB", close_result)
+        else:
+            logger.warning(f"[{sid}] Falló TB: {close_result}")
+        return
 
-    if rsi >= 90:
-        prev_max_rsi = redis_client.get(max_rsi_key)
-        if prev_max_rsi is None or rsi > float(prev_max_rsi):
-            redis_client.set(max_rsi_key, round(rsi, 4))
-        elif rsi < float(prev_max_rsi) and high > bb_upper * 0.9995 and close > ema6:
-            await _close_operation(symbol, close_price, config, key, sid, sio, "RSI_PEAK")
-            redis_client.delete(max_rsi_key)
+    # 2.3 Take‑profit final
+    if entry_point > 0 and close_price >= take_profit:
+        profit_progress = round((close_price - entry_point) / entry_point, 4)
+        if profit_progress >= 2:
+            close_result = close_market_order(symbol)
+            if close_result.get("status") == "FILLED":
+                await _close_operation(symbol, close_price, config, key, sid, sio, "TP", close_result)
+            else:
+                logger.warning(f"[{sid}] Falló TP final: {close_result}")
             return
-    else:
-        redis_client.delete(max_rsi_key)
-
-
-    if close_price >= take_profit:
-
-        new_tp = round(take_profit * 1.003, 4)
-        new_tb = round(take_profit * 0.999, 4)
-
-        config["take_profit"] = new_tp
-        config["take_benefit"] = new_tb
+        # 2.4 Ajuste dinámico de TP/TB
+        new_tp = round(take_profit * 1.005, 4)
+        new_tb = round(take_profit * 0.996, 4)
+        config.update({"take_profit": new_tp, "take_benefit": new_tb})
         redis_client.set(key, json.dumps(config))
-        logger.info(f"[{sid}] ✅ TP alcanzado. Nuevo TP: {new_tp}, TB: {new_tb}")
+        logger.info(f"[{sid}] TP dinámico: TP={new_tp}, TB={new_tb}")
         await sio.emit("operation_executed", config, to=sid)
+        return
 
-    elif config.get("take_benefit") is not None and close_price <= float(config["take_benefit"]):
-        await _close_operation(symbol, close_price, config, key, sid, sio, "TB")
-
-    elif close_price <= stop_loss:
-        await _close_operation(symbol, close_price, config, key, sid, sio, "SL")
+    # 3) Si no encaja en ningún cierre, no hacer nada
 
 
-async def _close_operation(symbol, close_price, config, key, sid, sio, operation_type):
+
+
+async def _close_operation(symbol, close_price, config, key, sid, sio, operation_type,close_result):
     # Asegurarse de usar dict
     if isinstance(config, str):
         config = json.loads(config)
 
-    # 1. Marcar la operación como cerrada
-    config["status"] = "closed"
-    closed_at = datetime.utcnow().isoformat()
-    config["closed_at"] = closed_at
+    fills = close_result.get("fills", [])
 
-    # 2. Datos a registrar en el histórico
+    formatted_fills = [
+            {
+                "price": f["price"],
+                "qty": f["qty"],
+                "commission": f["commission"],
+                "commissionAsset": f["commissionAsset"],
+                "tradeId": f["tradeId"]
+            }
+            for f in fills
+        ]
+
     result_data = {
-        "symbol":       symbol.upper(),
-        "entry_point":  float(config.get("entry_point", 0)),
-        "close_price":  close_price,
-        "operation":    operation_type,
-        "activated_at": config.get("activated_at"),
-        "closed_at":    closed_at,
-    }
-
-    # 3. Guardar resultado + reiniciar config en Redis
-    await _store_result(symbol, result_data, key, config, sid)
-
-
+            "symbol": symbol.upper(),
+            "operation": operation_type,
+            "side": close_result.get("side"),
+            "price_avg": "{:.4f}".format(close_price),
+            "amount": "{:.4f}".format(float(close_result.get("executedQty"))),
+            "total_usdt": "{:.4f}".format(float(close_result.get("cummulativeQuoteQty"))),
+            "commission": "{:.4f}".format(sum(float(f["commission"]) for f in fills)),
+            "commission_asset": fills[0].get("commissionAsset") if fills else "USDT",
+            "executed_at": datetime.utcnow().isoformat(),
+            "fills": formatted_fills
+        }
+    
     # 4. Limpiar campos que ya no sirven y dejar solo las alertas activas
     for field in ("entry_point", "take_profit", "stop_loss", "take_benefit"):
         config.pop(field, None)
-    config["status"] = "inactive"
+
+    # 3. Guardar resultado + reiniciar config en Redis
+    await _store_result(symbol, result_data, key, config, sid)
 
     # 5. Notificar al frontend
     await sio.emit("operation_executed", config, to=sid)
 
     # 6. Cancelar tarea de evaluación, si existe
+    # 6. Cancelar tarea de evaluación, si existe
     if sid in evaluation_tasks:
-        evaluation_tasks[sid].cancel()
+        task = evaluation_tasks.pop(sid)
+        task.cancel()
+
 
     # 7. Enviar notificación externa
-    await trigger_apigateway_async(config, operation_type)
+    plain = (
+            f"🔔 {symbol.upper()} operación cerrada ({operation_type})\n"
+            f"Side: {result_data['side']}\n"
+            f"Precio de cierre: {result_data['price_avg']} USDT\n"
+            f"Cantidad vendida: {result_data['amount']} {symbol.upper()}\n"
+            f"Total USDT: {result_data['total_usdt']}\n"
+            f"Comisión: {result_data['commission']} {result_data['commission_asset']}\n"
+            f"Hora ejecución: {result_data['executed_at']}"
+        )
+    send_telegram_message(plain)
 
 
 async def _store_result(symbol, result_data, key, config, sid, redis_key_suffix="_results"):
@@ -128,9 +148,11 @@ async def _store_result(symbol, result_data, key, config, sid, redis_key_suffix=
         new_config = {
             "alert_up": config.get("alert_up"),
             "alert_down": config.get("alert_down"),
-            "status": "inactive"
+            "status": config.get("status"),
+            "operate": False
         }
         redis_client.set(key, json.dumps(new_config))
+
         logger.info(f"[{sid}] 🔁 Config reiniciada con alertas activas.")
     except Exception as e:
         logger.error(f"[{sid}] ⚠️ Error al guardar nueva config: {e}")

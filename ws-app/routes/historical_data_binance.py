@@ -1,5 +1,4 @@
 import requests
-import json
 from datetime import datetime, timedelta,timezone
 from fastapi import APIRouter, HTTPException, Query
 from database import get_db_connection
@@ -96,8 +95,6 @@ async def update_binance_data(
 async def sync_recent_candles(symbol: str, interval: str = "1m"):
     conn = get_db_connection()
     cursor = conn.cursor()
-
-        
 
     # Definir rango desde ahora (UTC +6 horas) hacia atrás 24h
     now_utc = datetime.now(timezone.utc)

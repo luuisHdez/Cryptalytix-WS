@@ -1,7 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from database import get_db_connection
+from utils.redis_utils import sync_recent_candles_redis
 import pandas as pd
 from datetime import timedelta
+from utils.redis_utils import redis_client
+import json
 
 router = APIRouter()
 
@@ -17,7 +20,7 @@ VALID_INTERVALS = {
 async def get_historical_data(symbol: str, interval: str, before: int = None, limit: int = 500):
     if interval not in VALID_INTERVALS:
         raise HTTPException(status_code=400, detail="Intervalo no válido. Usa: 1m, 5m, 15m, 1h, 1d.")
-
+    
     try:
         conn = get_db_connection()
 
@@ -93,6 +96,35 @@ from fastapi import Request
 async def update_then_fetch(symbol: str, interval: str, request: Request):
     # 1. Actualiza desde Binance → PostgreSQL
     await sync_recent_candles(symbol, interval)
-
+    sync_recent_candles_redis(symbol)
     # 2. Luego carga desde la base de datos
     return await get_historical_data(symbol, interval, before=request.query_params.get("before"))
+
+
+@router.get("/operation-results/{symbol}")
+def get_operation_results(symbol: str, limit: int = 50):
+    try:
+        redis_key = f"{symbol.upper()}_results"
+        try:
+            raw_entries = redis_client.zrevrange(redis_key, 0, limit - 1)
+        except redis_client.exceptions.RedisError as e:
+            raise HTTPException(status_code=500, detail=f"Error de conexión con Redis: {str(e)}")
+
+        if not raw_entries:
+            return {"message": f"No hay resultados disponibles para {symbol.upper()}"}
+
+        results = []
+        for item in raw_entries:
+            try:
+                parsed = json.loads(item)
+                results.append(parsed)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"⚠️ Error al decodificar entrada Redis: {e}")
+                continue
+
+        return results or {"message": "Sin resultados válidos"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error inesperado al obtener resultados: {str(e)}")

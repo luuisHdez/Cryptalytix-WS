@@ -8,7 +8,7 @@ from botocore.awsrequest import AWSRequest
 async def trigger_apigateway_async(config, operation):
     print(f"🟢 Ejecutando trigger_apigateway_async con config y operación: {operation}, {config}")
     
-    session = boto3.Session(profile_name='admin-user')
+    session = boto3.Session(profile_name='Cryp-user')
     url = "https://f9gbw5irel.execute-api.us-east-1.amazonaws.com/default/twilio-lambda"
     credentials = session.get_credentials()
     region = session.region_name or "us-east-1"
