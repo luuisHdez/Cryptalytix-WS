@@ -137,7 +137,7 @@ async def _close_operation(symbol, close_price, config, key, sid, sio, operation
 async def _store_result(symbol, result_data, key, config, sid, redis_key_suffix="_results"):
     result_key = f"{symbol.upper()}{redis_key_suffix}"
     try:
-        score = int(datetime.utcnow().timestamp())
+        score = int(datetime.timezone.utcnow().timestamp())
         json_result = json.dumps(result_data)
         redis_client.zadd(result_key, {json_result: score})
     except Exception as e:

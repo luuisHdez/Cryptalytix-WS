@@ -2,16 +2,18 @@
 import json
 import logging
 import time
+import asyncio
 from utils.aws_gateway_client import trigger_apigateway_async
 from shared.socket_context import connected_users
 from utils.telegram_utils import send_telegram_message
+
 logger = logging.getLogger("alerts")
 
 MAX_ALERTS   = 1           # máximo de alertas permitidas
 WINDOW_SECS  = 100          # ventada deslizante
 COOLDOWN_SECS = 10         # intervalo mínimo entre alertas
 
-async def _should_alert(redis_client, key_prefix: str) -> bool:
+def _should_alert(redis_client, key_prefix: str) -> bool:
     """
     Control de frecuencia:
     • Máx. 3 alertas en 30 s
@@ -60,7 +62,7 @@ async def check_alerts(symbol: str, close_price: float, sid: str, sio, redis_cli
     # -------- Alert UP --------
     if alert_up and close_price >= alert_up:
         prefix = f"{symbol.upper()}_{user_id}_AU"
-        if await _should_alert(redis_client, prefix):
+        if await asyncio.to_thread(_should_alert, redis_client, prefix):
             send_telegram_message(
                 f"🚨 Alerta UP de {symbol.upper()}\n"
                 f"Precio actual: {close_price}\n"
@@ -72,7 +74,7 @@ async def check_alerts(symbol: str, close_price: float, sid: str, sio, redis_cli
     # -------- Alert DOWN --------
     if alert_down and close_price <= alert_down:
         prefix = f"{symbol.upper()}_{user_id}_AD"
-        if await _should_alert(redis_client, prefix):
+        if await asyncio.to_thread(_should_alert, redis_client, prefix):
             send_telegram_message(
                 f"🚨 Alerta DOWN de {symbol.upper()}\n"
                 f"Precio actual: {close_price}\n"

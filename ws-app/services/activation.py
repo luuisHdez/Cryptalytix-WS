@@ -4,10 +4,9 @@ import json
 import logging
 from datetime import datetime
 from shared.socket_context import connected_users
-from utils.aws_gateway_client import trigger_apigateway_async
-from services.binance_api import place_market_order
 import redis
 import os
+import asyncio # Aunque no se usa aquí, se mantiene si estaba importado
 from dotenv import load_dotenv
 from utils.telegram_utils import send_telegram_message 
 
@@ -18,7 +17,8 @@ redis_client = redis.StrictRedis.from_url(REDIS_URL, decode_responses=True)
 
 logger = logging.getLogger("activation")
 
-async def check_activation(symbol: str, close_price: float, sid: str, sio):
+# 🚨 AJUSTE: Función definida como SÍNCRONA.
+def check_activation(symbol: str, close_price: float, sid: str, sio):
     user_id = connected_users.get(sid)
     key = f"{symbol.upper()}_operation_{user_id}"
 
@@ -57,49 +57,63 @@ async def check_activation(symbol: str, close_price: float, sid: str, sio):
 
     try:
         vela = json.loads(raw[0])
-        rsi      = round(float(vela.get("rsi")), 4)
-        ema10    = round(float(vela.get("ema10")), 4)
-        ema50    = round(float(vela.get("ema50")), 4)
-        ema150   = round(float(vela.get("ema150")), 4)
-        close    = round(float(vela.get("close")), 4)
+        rsi = round(float(vela.get("rsi")), 4)
+        ema10 = round(float(vela.get("ema10")), 4)
+        ema50 = round(float(vela.get("ema50")), 4)
+        ema150 = round(float(vela.get("ema150")), 4)
+        close = round(float(vela.get("close")), 4)
     except (TypeError, ValueError):
-        return False  # datos incompletos o mal formateados
+        return False # datos incompletos o mal formateados
 
     
-
     min_rsi_key = f"{symbol.upper()}_min_rsi_{user_id}"
-
+    print("lalalala")
     # Notificación si RSI cae a 20 o menos
     if rsi <= 20:
         prev_min_rsi = redis_client.get(min_rsi_key)
         if prev_min_rsi is None or rsi < float(prev_min_rsi):
             redis_client.set(min_rsi_key, round(rsi, 4))
-            # solo notificación, no condición de entrada
+            oversold_message = (
+                f"📉 🚨 RSI ALERTA: {symbol.upper()} en Sobreventa Extrema.\n"
+                f"   RSI actual: {round(rsi, 2)} (Nuevo mínimo o ≤ 20).\n"
+                f"   Precio de cierre: {close}.\n"
+                f"   ⚠️ ESTO ES UNA SEÑAL DE VENTA INTENSA, NO UNA SEÑAL DE COMPRA GARANTIZADA."
+            )
+            send_telegram_message(oversold_message)
+            logger.info(f"[{sid}] Alerta de RSI <= 20 enviada para {symbol.upper()}.")
         return False  # no operamos aún
 
     # Condición base para operar
-    if close > ema50:
+    if close < ema50:
         if (
-            close > ema10 and
-            ema10 > ema50 
+            close < ema10 and
+            ema10 < ema50 
             and ema10 > ema150
-            and close < rsi 
         ):
-                        # --- Intentar comprar en Binance ---
+            # --- Intentar comprar en Binance ---
+            buy_message = (
+                f"📈 SEÑAL DE COMPRA para {symbol.upper()}\n"
+                f"✔️ Condición EMA Alcista Cumplida:\n"
+                f"   CLOSE ({close}) > EMA10 ({ema10})\n"
+                f"   EMA10 > EMA50 ({ema50}) > EMA150 ({ema150})\n"
+                f"   RSI Actual: {rsi}"
+            )
+            send_telegram_message(buy_message)
+            logger.info(f"[{sid}] Señal de compra generada para {symbol.upper()}")
             try:
                 order_response = {}
-                #place_market_order(symbol)
+                # place_market_order(symbol)
                 if order_response.get("status") != "FILLED":
-                    logger.warning(f"[{sid}]  Orden no completada en Binance: {order_response}")
+                    logger.warning(f"[{sid}]  Orden no completada en Binance: {order_response}")
                     return False
 
                 # Calcular precio promedio de compra real desde los fills
                 fills = order_response.get("fills", [])
                 if not fills:
-                    logger.error(f"[{sid}]  Orden sin fills, no se puede continuar.")
+                    logger.error(f"[{sid}]  Orden sin fills, no se puede continuar.")
                     return False
 
-                executed_qty =  float(order_response.get("executedQty"))
+                executed_qty = float(order_response.get("executedQty"))
                 cummulative_quote = float(order_response.get("cummulativeQuoteQty"))
                 entry = round(cummulative_quote / executed_qty, 4)
 
@@ -122,7 +136,7 @@ async def check_activation(symbol: str, close_price: float, sid: str, sio):
             config["take_profit"]     = round(entry * 1.005, 4)
             config["stop_loss"]       = round(entry * 0.997, 4)
             config["profit_progress"] = 0
-            config["activated_at"]    = datetime.utcnow().isoformat()
+            config["activated_at"]    = datetime.timezone.utcnow().isoformat()
 
             for field in ["entry_point", "take_profit", "stop_loss", "profit_progress"]:
                 config[field] = "{:.4f}".format(float(config[field]))
@@ -130,7 +144,6 @@ async def check_activation(symbol: str, close_price: float, sid: str, sio):
             redis_client.set(key, json.dumps(config))
             redis_client.delete(min_rsi_key)
 
-            # ✅ Guardar en histórico
             result_key = f"{symbol.upper()}_results"
             entry_result = {
                 "symbol": symbol.upper(),
@@ -139,7 +152,7 @@ async def check_activation(symbol: str, close_price: float, sid: str, sio):
                 "activated_at": config.get("activated_at"),
                 "buy_order": config.get("binance"),
             }
-            score = int(datetime.utcnow().timestamp())
+            score = int(datetime.timezone.utcnow().timestamp())
             redis_client.zadd(result_key, {json.dumps(entry_result): score})
             buy_order = config["binance"]
             executed_qty = buy_order.get("executedQty")
@@ -155,7 +168,6 @@ async def check_activation(symbol: str, close_price: float, sid: str, sio):
                 f"⏱️ Hora: {config['activated_at']}"
             )
             send_telegram_message(message)
-            await sio.emit("operation_executed", config, to=sid)
             logger.info(
                 f"[{sid}] Activación — CLOSE {close} > EMA150 {ema150}, "
                 f"EMA10 {ema10} > EMA50 {ema50} y EMA10 > EMA150"

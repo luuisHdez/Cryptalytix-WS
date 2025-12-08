@@ -67,7 +67,7 @@ def calcular_rsi_exacto(all_closes: List[float], period: int = 14) -> float:
 
 
 def calcular_y_guardar_rsi(symbol: str, redis_client, sid: str = "", period: int = 14):
-    
+    print("hola")
     try:
         # 1) Leer todo el histórico de velas con scores (timestamp)
         entries_scores = redis_client.zrange(symbol.upper(), 0, -1, withscores=True)
