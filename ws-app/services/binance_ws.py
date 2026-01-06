@@ -11,7 +11,7 @@ from services.evaluator import evaluate_indicators
 from services.alerts import check_alerts
 from services.activation import check_activation
 from services.processing import handle_kline_processing
-
+from utils.redis_utils import redis_client, evaluation_tasks
 
 # Logger
 logger = logging.getLogger("binance_ws")
@@ -20,16 +20,15 @@ logger.setLevel(logging.INFO)
 # Redis
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL")
-redis_client = redis.StrictRedis.from_url(REDIS_URL, decode_responses=True)
 
 # Almacena las tareas activas por cliente
 client_tasks = {}
 
-# Almacena las tareas activas por cliente
-evaluation_tasks = {}
 
 # Evaluación periódica cada 10 segundos
 async def scheduled_evaluation(symbol: str, sid: str, sio,user_id):
+
+    print('kaka')
     try:
         while True:
             
@@ -63,7 +62,6 @@ async def scheduled_evaluation(symbol: str, sid: str, sio,user_id):
                 except Exception as e:
                     logger.error(f"[{sid}] ❗ Error convirtiendo last_close_str a float: {e}")
 
-            
             await asyncio.sleep(10)
     except Exception as e:
         logger.error(f"❌ Error en scheduled_evaluation [{sid}]: {e}")
@@ -133,9 +131,7 @@ async def binance_stream(symbol: str, interval: str, sio, sid: str, user_id: int
 
                         # 5. Iniciar Tarea de Evaluación Periódica (si aplica)
                         if config.get("operate") is True and sid not in evaluation_tasks:
-                            activated = await asyncio.to_thread(
-                                check_activation, symbol.upper(), close_price, sid, sio
-                            )
+                            activated = await asyncio.to_thread(check_activation, symbol.upper(), close_price, sid, sio)
                             if activated:
                                 task = asyncio.create_task(scheduled_evaluation(symbol.upper(), sid, sio, user_id))
                                 evaluation_tasks[sid] = task

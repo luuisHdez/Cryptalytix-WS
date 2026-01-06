@@ -14,7 +14,7 @@ logger.setLevel(logging.INFO)
 
 # Variables de entorno
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "-1002311614150")
+CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 if not BOT_TOKEN or not CHAT_ID:
     logger.error("❌ Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en el .env")
 

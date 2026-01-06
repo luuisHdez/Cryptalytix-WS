@@ -54,7 +54,6 @@ def _should_alert(redis_client, key_prefix: str) -> bool:
     return True
 
 async def check_alerts(symbol: str, close_price: float, sid: str, sio, redis_client, config):
-   
     user_id   = connected_users.get(sid)
     alert_up   = float(config.get("alert_up",   0))
     alert_down = float(config.get("alert_down", 0))

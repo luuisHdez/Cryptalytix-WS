@@ -4,11 +4,10 @@ from datetime import datetime
 from services.binance_api import close_market_order
 from utils.telegram_utils import send_telegram_message
 from shared.socket_context import connected_users
-from utils.redis_utils import redis_client
+from utils.redis_utils import redis_client, evaluation_tasks
 
 logger = logging.getLogger("binance_ws")
 
-evaluation_tasks = {}
 
 async def evaluate_indicators(symbol: str, close_price: float, sid: str, sio,user_id):
     
@@ -28,12 +27,13 @@ async def evaluate_indicators(symbol: str, close_price: float, sid: str, sio,use
     take_profit = float(config.get("take_profit",  0))
     stop_loss   = float(config.get("stop_loss",    0))
     tb_str      = config.get("take_benefit")
+    print("evaluacion")
     take_benefit= float(tb_str) if tb_str is not None else None
     
     # 2) Cierres definitivos, en orden de urgencia:
     # 2.1 Stop‑loss
     if stop_loss and close_price <= stop_loss:
-        close_result = close_market_order(symbol)
+        close_result = await close_market_order(symbol)
         if close_result.get("status") == "FILLED":
             await _close_operation(symbol, close_price, config, key, sid, sio, "SL", close_result)
         else:
@@ -42,7 +42,7 @@ async def evaluate_indicators(symbol: str, close_price: float, sid: str, sio,use
 
     # 2.2 Take‑benefit
     if take_benefit is not None and close_price <= take_benefit:
-        close_result = close_market_order(symbol)
+        close_result = await close_market_order(symbol)
         if close_result.get("status") == "FILLED":
             await _close_operation(symbol, close_price, config, key, sid, sio, "TB", close_result)
         else:
@@ -50,10 +50,13 @@ async def evaluate_indicators(symbol: str, close_price: float, sid: str, sio,use
         return
 
     # 2.3 Take‑profit final
+    print(f"🔍 EVALUANDO TP: Price: {close_price} >= TP: {take_profit}?")
+    
     if entry_point > 0 and close_price >= take_profit:
+        print("✅ ENTRO EN LA CONDICIÓN DE TP")
         profit_progress = round((close_price - entry_point) / entry_point, 4)
         if profit_progress >= 2:
-            close_result = close_market_order(symbol)
+            close_result = await close_market_order(symbol)
             if close_result.get("status") == "FILLED":
                 await _close_operation(symbol, close_price, config, key, sid, sio, "TP", close_result)
             else:

@@ -11,13 +11,13 @@ from shared.socket_context import connected_users, config_cache
 load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL")
 redis_client = redis.StrictRedis.from_url(REDIS_URL, decode_responses=True)
-
+evaluation_tasks = {}
 
 # Guarda resultado en ZADD
 def save_result_to_redis(redis_client, symbol: str, result_data: dict):
     try:
         result_key = f"{symbol.upper()}_results"
-        score = int(datetime.utcnow().timestamp())
+        score = int(datetime.timezone.utcnow().timestamp())
         json_result = json.dumps(result_data)
         added = redis_client.zadd(result_key, {json_result: score})
         logger.info(f"📌 Resultado agregado a ZADD ({result_key}): {added}")

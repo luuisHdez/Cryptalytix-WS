@@ -18,22 +18,22 @@ logger = logging.getLogger("binance_ws")
 logger.setLevel(logging.INFO)
 
 async def handle_kline_processing(symbol, sid, user_id, kline_data, config, sio):
+    k_data = kline_data.get("k", kline_data)
     symbol_upper = symbol.upper()
     backup_key = f"{symbol_upper}_last_failed_kline"
-    close_price = round(float(kline_data["c"]), 4)
+    close_price = round(float(k_data["c"]), 4)
     print(kline_data)
     # 1. Preparar datos y persistencia
     aligned_timestamp = (kline_data['E'] // 1000) * 1000 # Asumo que E está disponible o usas kline_data['t']
     optimized = {
         "timestamp": aligned_timestamp,
-        "open": kline_data["o"],
-        "high": kline_data["h"],
-        "low": kline_data["l"],
-        "close": kline_data["c"],
-        # ... resto de las claves ...
-        "volume": kline_data["v"],
-        "number_of_trades": kline_data["n"],
-        "taker_buy_quote_asset_volume": kline_data["Q"],
+        "open": k_data["o"],
+        "high": k_data["h"],
+        "low": k_data["l"],
+        "close": k_data["c"],
+        "volume": k_data["v"],
+        "number_of_trades": k_data["n"],
+        "taker_buy_quote_asset_volume": k_data["Q"],
     }
     
     for attempt in range(3):

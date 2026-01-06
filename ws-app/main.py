@@ -4,12 +4,13 @@ import asyncio
 from dotenv import load_dotenv
 import socketio
 import jwt
-from jwt.exceptions import PyJWTError
+from jwt import PyJWTError
 
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from starlette.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
+from utils.redis_utils import evaluation_tasks
 
 from shared.socket_context import sio, connected_users
 from routes.historical_data import router as historical_router
@@ -94,15 +95,24 @@ async def disconnect(sid):
     socket_obj = sio.eio.sockets.get(sid)
     print(f"  🔎 socket_obj.closed: {socket_obj.closed if socket_obj else 'no existe'}")
 
+    # 1. Eliminar usuario de la lista de conectados
     if sid in connected_users:
-        print("  🔧 Eliminando de connected_users")
+        print(f"  🔧 Eliminando {sid} de connected_users")
         del connected_users[sid]
 
-    task = binance_ws.client_tasks.get(sid)
-    if task:
-        print("  🗑 Cancelando tarea asociada")
-        task.cancel()
+    # 2. Cancelar el Stream de Binance (Tarea de recepción de datos)
+    task_stream = binance_ws.client_tasks.get(sid)
+    if task_stream:
+        print(f"  🗑 Cancelando Stream de Binance para {sid}")
+        task_stream.cancel()
         del binance_ws.client_tasks[sid]
+
+    # 3. Cancelar la Tarea de Evaluación (El bucle de 10 segundos del Script 1)
+    # Esto evita que el bot siga calculando ventas para alguien desconectado
+    if sid in evaluation_tasks:
+        print(f"  🛑 Deteniendo bucle de evaluación para {sid}")
+        task_eval = evaluation_tasks.pop(sid) 
+        task_eval.cancel()
 
 
 @sio.event

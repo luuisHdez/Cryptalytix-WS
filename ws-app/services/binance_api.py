@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import requests
 from dotenv import load_dotenv
+import httpx
 
 load_dotenv()
 
@@ -147,14 +148,19 @@ def place_market_order(symbol: str):
 
 
 
-def close_market_order(symbol: str):
+async def close_market_order(symbol: str):
     try:
         asset = symbol.replace("USDT", "")
+        
+        # Mantenemos tu lógica de entorno de desarrollo/producción
         if IS_DEV:
-            quantity = 5  # Solo 1 unidad en entorno de desarrollo
+            quantity = 5  
         else:
+            # Si get_balance y adjust_quantity son síncronas, se quedan igual.
+            # Si fueran asíncronas, habría que agregar 'await'.
             raw_balance = get_balance(asset)
             quantity = adjust_quantity(symbol, raw_balance)
+            
             if quantity <= 0:
                 msg = f"⚠️ No hay balance disponible de {asset} para vender."
                 print(msg)
@@ -170,24 +176,23 @@ def close_market_order(symbol: str):
         }
 
         signed_params = sign_payload(params)
-        response = requests.post(url, headers=HEADERS, params=signed_params)
-        response.raise_for_status()
 
-        try:
+        # Usamos httpx.AsyncClient para NO bloquear el flujo de los otros scripts
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=HEADERS, params=signed_params, timeout=10.0)
+            response.raise_for_status()
             data = response.json()
-        except ValueError:
-            raise ValueError(f"❌ Error al decodificar respuesta JSON: {response.text}")
 
+        # Validación de salida igual a la original
         if "status" not in data or data.get("status") != "FILLED":
             raise ValueError(f"❌ Orden de venta no completada: {data}")
 
-        #print("📤 Orden de venta ejecutada:", data)
         return data
 
     except Exception as e:
         print(f"❌ Error en close_market_order: {e}")
+        # Retorno idéntico al original para no romper la lógica de 'evaluate_indicators'
         return {
             "status": "ERROR",
             "message": str(e)
         }
-

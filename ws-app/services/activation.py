@@ -21,7 +21,7 @@ logger = logging.getLogger("activation")
 def check_activation(symbol: str, close_price: float, sid: str, sio):
     user_id = connected_users.get(sid)
     key = f"{symbol.upper()}_operation_{user_id}"
-
+    print('lala')
     # — después de este bloque —
     try:
         config_json = redis_client.get(key)
