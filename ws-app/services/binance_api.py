@@ -88,56 +88,63 @@ def get_balance(asset: str) -> float:
 
 
 
-def place_market_order(symbol: str):
+async def place_market_order(symbol: str):
     try:
-        if IS_DEV:
-            quantity = 2  # Compra exacta de 1 unidad
-        else:
-            usdt_balance = get_balance("USDT")
-            print(f"📊 Saldo USDT detectado: {usdt_balance}")
+        # Usamos un cliente asíncrono
+        async with httpx.AsyncClient() as client:
+            if IS_DEV:
+                quantity = 2 
+            else:
+                usdt_balance = get_balance("USDT") # Asegúrate que get_balance sea async o manéjala
+                print(f"📊 Saldo USDT detectado: {usdt_balance}")
 
-            if usdt_balance <= 0:
-                raise ValueError("Balance USDT insuficiente.")
+                if usdt_balance <= 1.0: # Mínimo de seguridad
+                    raise ValueError(f"Balance USDT insuficiente ({usdt_balance}).")
 
-            usdt_to_use = (PERCENTAGE_TO_USE / 100) * usdt_balance
-            print(f"➡️ Se usará: {usdt_to_use} USDT para comprar {symbol}")
-            # Obtener precio actual para calcular cantidad
-            price_url = f"{BASE_URL}/api/v3/ticker/price"
-            price_resp = requests.get(price_url, params={"symbol": symbol})
-            price_resp.raise_for_status()
+                usdt_to_use = (PERCENTAGE_TO_USE / 100) * usdt_balance
+                print(f"➡️ Se usará: {usdt_to_use} USDT para comprar {symbol}")
 
-            price_data = price_resp.json()
-            current_price = float(price_data.get("price", 0))
-            if current_price <= 0:
-                raise ValueError("Precio inválido obtenido.")
+                # Obtener precio actual (Asíncrono)
+                price_url = f"{BASE_URL}/api/v3/ticker/price"
+                price_resp = await client.get(price_url, params={"symbol": symbol})
+                price_resp.raise_for_status()
 
-            raw_qty = usdt_to_use / current_price
-            quantity = adjust_quantity(symbol, raw_qty)
+                price_data = price_resp.json()
+                current_price = float(price_data.get("price", 0))
+                
+                if current_price <= 0:
+                    raise ValueError("Precio inválido obtenido.")
 
+                raw_qty = usdt_to_use / current_price
+                quantity = adjust_quantity(symbol, raw_qty)
 
-        url = f"{BASE_URL}/api/v3/order"
-        params = {
-            "symbol": symbol,
-            "side": "BUY",
-            "type": "MARKET",
-            "quantity": quantity,
-            "timestamp": get_timestamp()
-        }
+            # Validar que la cantidad no sea 0 antes de enviar a Binance
+            if quantity <= 0:
+                raise ValueError(f"Cantidad calculada es 0. Saldo {usdt_balance} es muy bajo para {symbol}.")
 
-        signed_params = sign_payload(params)
-        response = requests.post(url, headers=HEADERS, params=signed_params)
-        response.raise_for_status()
+            url = f"{BASE_URL}/api/v3/order"
+            params = {
+                "symbol": symbol,
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": quantity,
+                "timestamp": get_timestamp()
+            }
 
-        try:
+            signed_params = sign_payload(params)
+            
+            # Petición POST asíncrona
+            response = await client.post(url, headers=HEADERS, params=signed_params)
+            response.raise_for_status()
+
             data = response.json()
-        except ValueError:
-            raise ValueError(f"❌ Error al decodificar respuesta JSON: {response.text}")
 
-        if "status" not in data or data.get("status") != "FILLED":
-            raise ValueError(f"❌ Orden no completada: {data}")
+            if data.get("status") != "FILLED":
+                # Nota: Las MARKET orders a veces salen como 'EXPIRED' si no hay liquidez
+                raise ValueError(f"❌ Orden no completada: {data}")
 
-        print("✅ Orden ejecutada:", data)
-        return data
+            print("✅ Orden ejecutada:", data)
+            return data
 
     except Exception as e:
         print(f"❌ Error en place_market_order: {e}")
@@ -145,8 +152,6 @@ def place_market_order(symbol: str):
             "status": "ERROR",
             "message": str(e)
         }
-
-
 
 async def close_market_order(symbol: str):
     try:

@@ -1,50 +1,81 @@
-# main.py
 import os
 import asyncio
 from dotenv import load_dotenv
 import socketio
 import jwt
-from jwt import PyJWTError
+from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from starlette.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
-from utils.redis_utils import evaluation_tasks
 
+# Imports de tu proyecto
+from utils.redis_utils import evaluation_tasks
 from shared.socket_context import sio, connected_users
 from routes.historical_data import router as historical_router
 from routes.historical_data_binance import router as historical_binance
 from routes.operation_config import router as operation_config
 from services import binance_ws
+from services.telegram_bot import start_telegram_receiver, bot # Asegúrate que el nombre coincida
 
 load_dotenv()
-
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-# FastAPI App
+# 1. Configuración de FastAPI
 fastapi_app = FastAPI()
 fastapi_app.include_router(historical_router)
 fastapi_app.include_router(historical_binance)
 fastapi_app.include_router(operation_config)
 
-
-
 @fastapi_app.get("/")
 async def root():
-    return {"message": "FastAPI con Socket.IO dinámico"}
+    return {"message": "Sistemas activos: FastAPI + Socket.IO + Telegram"}
 
-# App combinada con Starlette
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    # Arrancar Telegram
+    telegram_task = asyncio.create_task(start_telegram_receiver())
+    
+    yield  # La aplicación está funcionando
+    
+    # --- PROCESO DE CIERRE ---
+    print("\n⏳ Apagando servicios...")
+    
+    # 1. Cancelamos la tarea de fondo
+    telegram_task.cancel()
+    
+    # 2. Cierre forzado de la conexión de red de Telegram
+    # Esto rompe el "bloqueo" que impide cerrar el servidor
+    await bot.session.close() 
+    
+    try:
+        # Le damos solo 1 segundo para limpiar, si no, seguimos
+        await asyncio.wait_for(telegram_task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+        
+    print("✅ Servidor detenido limpiamente")
+
+# 3. Creación de la App Starlette UNIFICADA
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Mount("/socket.io", app=socketio.ASGIApp(sio), name="socketio"),
         Mount("/", app=fastapi_app, name="fastapi"),
     ]
 )
+
+# 4. Middleware de CORS (Debe ir después de definir 'app')
+# Agregamos tanto http como https para evitar el error de tu captura
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://localhost:5173"],
-    allow_credentials=True,    # <— importante
+    allow_origins=[
+        "http://localhost:5173", 
+        "https://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -130,3 +161,11 @@ async def subscribe(sid, data):
     task = asyncio.create_task(binance_ws.binance_stream(symbol, interval, sio, sid, user_id))
     binance_ws.client_tasks[sid] = task
     #asyncio.create_task(binance_ws.scheduled_evaluation(symbol, sid, sio))
+
+
+
+from contextlib import asynccontextmanager # <--- Añade esto
+from services.telegram_bot import start_telegram_receiver # <--- Importa tu bot
+
+# ... tus otros imports ...
+

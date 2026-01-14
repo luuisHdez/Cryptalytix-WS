@@ -138,7 +138,7 @@ async def execute_buy_order(data: SymbolRequest, request: Request):
         symbol = data.symbol.upper()
         print(user)
         # Ejecutar orden en Binance
-        result = place_market_order(symbol)
+        result = await place_market_order(symbol)
         if result.get("status") != "FILLED":
             raise HTTPException(status_code=400, detail="Orden no fue completada.")
 
@@ -274,7 +274,7 @@ async def execute_sell_order(data: SymbolRequest, request: Request):
         config["status"]          = data.active_alerts
         config["operate"]         = data.active_operations
         
-        close_operation = close_market_order(symbol)
+        close_operation = await close_market_order(symbol)
         if close_operation.get('status') != "FILLED":
             raise HTTPException(status_code=400, detail="Order not completed")
         
