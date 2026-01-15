@@ -18,6 +18,7 @@ from routes.historical_data_binance import router as historical_binance
 from routes.operation_config import router as operation_config
 from services import binance_ws
 from services.telegram_bot import start_telegram_receiver, bot # Asegúrate que el nombre coincida
+from ai.agents.hourly_analyst import agent_analysis
 
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -36,7 +37,7 @@ async def root():
 async def lifespan(app: Starlette):
     # Arrancar Telegram
     telegram_task = asyncio.create_task(start_telegram_receiver())
-    
+    agent_task = asyncio.create_task(agent_analysis())
     yield  # La aplicación está funcionando
     
     # --- PROCESO DE CIERRE ---
@@ -44,7 +45,7 @@ async def lifespan(app: Starlette):
     
     # 1. Cancelamos la tarea de fondo
     telegram_task.cancel()
-    
+    agent_task.cancel()
     # 2. Cierre forzado de la conexión de red de Telegram
     # Esto rompe el "bloqueo" que impide cerrar el servidor
     await bot.session.close() 

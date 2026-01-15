@@ -3,7 +3,6 @@ import json
 import logging
 import time
 import asyncio
-from utils.aws_gateway_client import trigger_apigateway_async
 from shared.socket_context import connected_users
 from utils.telegram_utils import send_telegram_message
 

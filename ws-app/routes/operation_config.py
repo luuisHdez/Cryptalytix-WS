@@ -11,8 +11,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException
 from datetime import datetime
 from utils.auth_utils import verify_jwt_from_cookie
 from services.binance_api import place_market_order
-from utils.aws_gateway_client import trigger_apigateway_async
-from shared.socket_context import connected_users, sio, config_cache  # asegúrate que sio esté importado aquí
+from shared.socket_context import connected_users, sio
 from services.evaluator import evaluate_indicators, evaluation_tasks
 from utils.telegram_utils import send_telegram_message
 
