@@ -128,31 +128,17 @@ class SymbolRequest(BaseModel):
     active_alerts: bool = False
 
 @router.post("/buy-order")
+@router.post("/buy-order")
 async def execute_buy_order(data: SymbolRequest, request: Request):
-    
     try:
-        print(request)
+        # 1. Obtener datos de usuario y símbolo primero
         user = verify_jwt_from_cookie(request)
         user_id = user.get("user_id")
         symbol = data.symbol.upper()
-        print(user)
-        # Ejecutar orden en Binance
-        result = await place_market_order(symbol)
-        if result.get("status") != "FILLED":
-            raise HTTPException(status_code=400, detail="Orden no fue completada.")
 
-        fills = result.get("fills", [])
-        if not fills:
-            raise HTTPException(status_code=500, detail="Orden sin fills, no se puede continuar.")
-
-
-        executed_qty = float(result.get("executedQty"))
-        cummulative_quote = float(result.get("cummulativeQuoteQty"))
-        entry = round(cummulative_quote / executed_qty, 4)
-
-        # Buscar configuración previa
+        # 2. VALIDAR CONFIGURACIÓN EN REDIS ANTES DE COMPRAR
+        # Si esto falla, el flujo se detiene aquí y no se gasta dinero
         key = f"{symbol}_operation_{user_id}"
-
         try:
             redis_data = redis_client.get(key)
             if not redis_data:
@@ -161,15 +147,29 @@ async def execute_buy_order(data: SymbolRequest, request: Request):
         except redis.exceptions.RedisError as e:
             raise HTTPException(status_code=500, detail=f"Error de Redis: {str(e)}")
 
+        # 3. EJECUTAR ORDEN EN BINANCE
+        # Ahora estamos seguros de que tenemos dónde guardar el resultado
+        result = await place_market_order(symbol)
+        
+        if result.get("status") != "FILLED":
+            raise HTTPException(status_code=400, detail="Orden no fue completada.")
 
+        fills = result.get("fills", [])
+        if not fills:
+            raise HTTPException(status_code=500, detail="Orden sin fills, no se puede continuar.")
 
+        # 4. CÁLCULOS Y ACTUALIZACIÓN DE LÓGICA
+        executed_qty = float(result.get("executedQty"))
+        cummulative_quote = float(result.get("cummulativeQuoteQty"))
+        entry = round(cummulative_quote / executed_qty, 4)
 
-        # Actualizar campos
         config["entry_point"]     = entry
         config["take_profit"]     = round(entry * 1.010, 4)
         config["stop_loss"]       = round(entry * 0.995, 4)
-        config["status"]          = data.active_alerts
-        config["operate"]         = data.active_operations
+        
+        # Ajuste para evitar error de Pydantic/Atributos usando .get() de la config de Redis
+        config["status"]          = config.get("active_alerts", True) 
+        config["operate"]         = config.get("active_operations", True)           
 
         config["profit_progress"] = 0
         config["activated_at"]    = datetime.utcnow().isoformat()
@@ -186,9 +186,10 @@ async def execute_buy_order(data: SymbolRequest, request: Request):
         for field in ["entry_point", "take_profit", "stop_loss", "profit_progress"]:
             config[field] = "{:.4f}".format(float(config[field]))
 
+        # Guardar actualización en Redis
         redis_client.set(key, json.dumps(config))
-        fills = result.get("fills", [])
 
+        # 5. HISTÓRICO Y NOTIFICACIONES (Sin cambios en lógica)
         formatted_fills = [
             {
                 "price": f["price"],
@@ -200,8 +201,6 @@ async def execute_buy_order(data: SymbolRequest, request: Request):
             for f in fills
         ]
 
-
-        # Guardar en histórico
         result_key = f"{symbol}_results"
         entry_result = {
             "symbol": symbol,
@@ -219,7 +218,6 @@ async def execute_buy_order(data: SymbolRequest, request: Request):
         score = int(datetime.utcnow().timestamp())
         redis_client.zadd(result_key, {json.dumps(entry_result): score})
         
-        # Notificar al webhook externo
         plain = (
             f"🟢 {symbol} compra manual ejecutada\n"
             f"🛒 Cantidad: {entry_result['amount']} {symbol}\n"
@@ -230,10 +228,10 @@ async def execute_buy_order(data: SymbolRequest, request: Request):
         )
         send_telegram_message(plain)
 
+        # 6. TAREAS ASÍNCRONAS
         sid = next((s for s, u in connected_users.items() if u == user_id), None)
-        # Lanzar evaluación programada
-        if sid not in evaluation_tasks:
-            task = asyncio.create_task(evaluate_indicators(symbol.upper(), entry, sid, sio, user_id))
+        if sid and sid not in evaluation_tasks:
+            task = asyncio.create_task(evaluate_indicators(symbol, entry, sid, sio, user_id))
             evaluation_tasks[sid] = task
 
         return {"message": "✅ Orden ejecutada manualmente y configuración actualizada", "details": config}
